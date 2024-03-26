@@ -31,6 +31,7 @@
 #include <executorch/runtime/platform/runtime.h>
 #include <executorch/util/util.h>
 
+
 static uint8_t method_allocator_pool[4 * 1024U * 1024U]; // 4 MB
 
 DEFINE_string(
@@ -155,40 +156,84 @@ int main(int argc, char** argv) {
       method.error());
   ET_LOG(Info, "Method loaded.");
 
-  // Prepare the inputs.
-  // Use ones-initialized inputs.
-  auto inputs = util::PrepareInputTensors(*method);
-  ET_LOG(Info, "Inputs prepared.");
 
-  // Run the model.
-  Error status = method->execute();
-  ET_CHECK_MSG(
-      status == Error::Ok,
-      "Execution of method %s failed with status 0x%" PRIx32,
-      method_name,
-      status);
-  ET_LOG(Info, "Model executed successfully.");
-
-  // Print the outputs.
-  std::vector<EValue> outputs(method->outputs_size());
-  ET_LOG(Info, "%zu outputs: ", outputs.size());
-  status = method->get_outputs(outputs.data(), outputs.size());
-  ET_CHECK(status == Error::Ok);
-  // Print the first and last 100 elements of long lists of scalars.
-  std::cout << torch::executor::util::evalue_edge_items(100);
-  for (int i = 0; i < outputs.size(); ++i) {
-    std::cout << "Output " << i << ": " << outputs[i] << std::endl;
+  // Open the binary file with file descriptor, you can write on your own
+  const char* filename = "./data/test_batch.bin";
+  int fd = open(filename, O_RDONLY);
+  if (fd < 0) {
+      ET_LOG(Info, "Error Reading binary file.");
+      return 1;
   }
 
-  // Dump the profiling data to the specified file.
-  torch::executor::prof_result_t prof_result;
-  EXECUTORCH_DUMP_PROFILE_RESULTS(&prof_result);
-  if (prof_result.num_bytes != 0) {
-    FILE* ptr = fopen(FLAGS_prof_result_path.c_str(), "w+");
-    fwrite(prof_result.prof_data, 1, prof_result.num_bytes, ptr);
-    fclose(ptr);
+  int correct_count = 0;
+  // int num_test_img = 10;   // Test images from CIFAR10
+  int num_test_img = 10000;   // Test images from CIFAR10
+
+  for (int i = 0; i < num_test_img; i++){
+
+    Image img = torch::executor::util::ReadImage(fd);
+    auto inputs = util::PrepareInputTensors(*method, img);
+
+    // Run the model.
+    Error status = method->execute();
+    ET_CHECK_MSG(
+        status == Error::Ok,
+        "Execution of method %s failed with status 0x%" PRIx32,
+        method_name,
+        status);
+
+    // Output
+    std::vector<EValue> outputs(method->outputs_size());
+    status = method->get_outputs(outputs.data(), outputs.size());
+    ET_CHECK(status == Error::Ok);
+
+
+    /* TODO:
+     *    Predict the label of the image depending on the output tensor
+     */
+    const exec_aten::Tensor output_tensor = outputs[0].toTensor();
+
+    /* Your CODE starts here */
+
+    auto pred_label = -1;
+    float max = -20;
+    float* pred_result = output_tensor.mutable_data_ptr<float>();
+
+    // int num = output_tensor.numel();
+    // std::cout << output_tensor << std::endl;
+
+    for (size_t i = 0; i < num_test_img; i++)
+    {
+      // std::cout << i << ' '  << pred_result[i] << std::endl;
+      if (pred_result[i] > max)
+      {
+        pred_label = i;
+        max = pred_result[i];
+        // std::cout << "------>"  << pred_result[i] << ' ' << pred_label << ' ' << img.label<< std::endl;
+      }
+      // std::cout << std::endl << std::endl;
+    }
+    
+    
+
+    /*  DO NOT MODIFY THIS PART */
+    if ((int32_t)img.label == pred_label)
+        correct_count++;
+
+    if ((i+1) % 500 == 0){
+      std::cout << "Done testing: " << i+1 << "/" << num_test_img << std::endl;
+      std::cout << "Output " << i+1 << ": " << outputs[0] << std::endl;
+    }
+    /* ======================== */
+
+    util::FreeInputs(inputs);
   }
 
-  util::FreeInputs(inputs);
+  close(fd);
+
+  /*  DO NOT MODIFY THIS PART */
+  std::cout << "Accuracy: " << (float)correct_count / num_test_img << std::endl;
+  /*  ====================== */
+  
   return 0;
 }
